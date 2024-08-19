@@ -219,7 +219,9 @@ class CrossAttnUnetr(nn.Module):
         out = self.decoder1(dec0, enc[0])  # [B, 48, 96, 96, 96]
         return out
 
-    def forward_output_semseg(self, out_dec, task_embedding=None):
+    def forward_output_semseg(
+        self, out_dec, weight_splits=None, bias_splits=None, num_insts=None
+    ):
         out = self.output(out_dec)  # [B, CLASSES, 96, 96, 96]
         return out
 

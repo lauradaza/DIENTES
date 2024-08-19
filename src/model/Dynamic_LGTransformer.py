@@ -35,6 +35,10 @@ class Dynamic_LocalGlobal(nn.Module):
         self.text_to_vision = nn.Linear(512, 256)
         self.class_num = out_channels
 
+        self.dyn_weights = None
+        self.dyn_bias = None
+        self.num_insts = None
+
         if training:
             self.forward = self.forward_train
         else:
@@ -79,4 +83,4 @@ class Dynamic_LocalGlobal(nn.Module):
         )
         if isinstance(logits, list):
             logits = torch.stack(logits, 0)
-        return logits, out_dec
+        return logits

@@ -5,15 +5,12 @@ from tqdm import tqdm
 import nibabel as nib
 
 import torch
-import torch.nn.functional as F
-
-from monai.transforms import Invertd
 
 from src.dataset.dataloader import get_loader
 from src.model.Dynamic_LGTransformer import Dynamic_LocalGlobal
 
 from src.utils.utils import get_key, resample_3d, dice_score
-from src.utils.sliding_window_inference import sliding_window_inference
+from src.utils.sliding_window_inf import sliding_window_inference
 from src.utils.constants import TEMPLATE, ORGAN_NAMES, NUM_CLASS
 from src.utils.config import args
 
@@ -36,7 +33,7 @@ def process_one_image(model, sample, args):
     print("Image shape:", img_shape)
     print("Batch size (image patches):", args.batch_size)
 
-    pred, _ = sliding_window_inference(
+    pred = sliding_window_inference(
         image,
         roi_size,
         args.batch_size,
@@ -46,12 +43,10 @@ def process_one_image(model, sample, args):
         device=torch.device("cpu"),  # output device
         with_coord=True,
         metadata=metadata,  # kwargs
-        amp_device=args.device,
     )
 
-    pred = F.sigmoid(pred.cpu())
-    pred_hard = pred > args.threshold
-    return pred[0], pred_hard[0]
+    pred = pred.sigmoid_()
+    return pred[0]
 
 
 def print_metrics(pred_hard, label, organ_list):
@@ -78,8 +73,6 @@ def print_metrics(pred_hard, label, organ_list):
 
 
 def prepare_inference(device):
-    args.entities = True
-
     torch.backends.cudnn.benchmark = True
 
     # prepare the model
@@ -118,8 +111,9 @@ def prepare_inference(device):
     model.to(device)
     model.eval()
 
-    with torch.no_grad():
-        model.get_test_kernels(["ToothFairy2"])
+    if args.entities:
+        with torch.no_grad():
+            model.get_test_kernels(["ToothFairy2"])
     return model
 
 
@@ -127,6 +121,7 @@ def ToothFairy_inference(image, device):
     print("===== Starting image inference =====")
 
     start_time = time.time()
+    args.entities = True
     model = prepare_inference(device)
 
     _, _, H, W, D = image.shape
@@ -141,15 +136,17 @@ def ToothFairy_inference(image, device):
     }
 
     args.device = str(device)  # for the Autocast part
-    pred, pred_hard = process_one_image(model, sample, args)
+    pred = process_one_image(model, sample, args)
 
     print(" => Prediction time:", time.time() - start_time)
     mid_time = time.time()
     torch.cuda.empty_cache()
 
-    merged_pred, _ = resample_3d(
-        pred_hard,
-        pred,
+    pred = pred > args.threshold
+    pred = pred.numpy().astype(np.uint8)
+    merged_pred = resample_3d(
+        pred,  # hard pred
+        None,  # logits
         sample,
         not args.simple_merge,
         skip_classes=True,
@@ -161,6 +158,7 @@ def ToothFairy_inference(image, device):
 
 
 def main():
+    args.entities = True
     model = prepare_inference(torch.device("cuda"))
 
     ValLoader, val_transforms = get_loader(args)
@@ -188,16 +186,16 @@ def main():
             continue
 
         batch["image"] = batch["image"].cuda()
-        pred, pred_hard = process_one_image(model, batch, args)
+        pred = process_one_image(model, batch, args)
         print(" => Inference time:", time.time() - start_time)
         mid_time = time.time()
         torch.cuda.empty_cache()
 
-        print_metrics(pred_hard, batch["post_label"][0, 1:], organ_list)
+        print_metrics(pred > args.threshold, batch["post_label"][0, 1:], organ_list)
 
         map_empty_classes = task_id[0] == "ToothFairy2"
         merged_pred, _ = resample_3d(
-            pred_hard,
+            pred > args.threshold,
             pred,
             batch,
             not args.simple_merge,

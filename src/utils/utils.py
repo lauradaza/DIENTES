@@ -55,16 +55,21 @@ def add_category(final_mask, organ_label, intersection, tgt):
         return final_mask
 
     conflict_inst = organ_label * intersection
+    ids_check = fastremap.unique(conflict_inst)[1:]
     tgt_i, tgt_size = fastremap.unique(organ_label, return_counts=True)
     tgt_i, tgt_size = tgt_i[1:], tgt_size[1:]
 
-    # Iterate through the target instances that have overlaping
+    # Iterate through the organ instances that have overlaping
     for iid, isize in zip(tgt_i, tgt_size):
-        target_instance = conflict_inst == iid
-        if target_instance.sum() < 100:
-            organ_label[conflict_inst == iid] = 0
+        if iid not in ids_check:
             continue
 
+        target_instance = organ_label == iid
+        if isize < 100:
+            organ_label[target_instance] = 0
+            continue
+
+        # other organs that also predict in the same voxels
         conflict_labels = fastremap.unique(final_mask[target_instance])
         for conflict in conflict_labels:
             if conflict == 0:
@@ -73,34 +78,40 @@ def add_category(final_mask, organ_label, intersection, tgt):
             # check individual instances of the conflicting label
             cft_binary = final_mask == conflict
             tgt_inst = cc3d.connected_components(cft_binary, connectivity=26)
-            c_id, c_size = fastremap.unique(tgt_inst * intersection, return_counts=True)
+            c_id, c_size = fastremap.unique(
+                tgt_inst * target_instance, return_counts=True
+            )  # overlaps with target_instance
             c_id, c_size = c_id[1:], c_size[1:]  # intersection id and size
 
             for i, j in zip(c_id, c_size):
                 _inst = tgt_inst == i  # intersecting instance
                 _size = _inst.sum()
                 if j < 100:
-                    organ_label[(_inst * intersection).astype(bool)] = 0
+                    # organ_label[(_inst * intersection).astype(bool)] = 0
                     continue
 
                 # if conflicting inst is smaller than existing pred, delete it
                 if _size > isize:
                     organ_label[_inst] = 0
-                else:
+                else:  # else, change all existing pred instance to new tgt
                     organ_label[_inst] = tgt_i[-1] + 1
+
+        target_instance = organ_label == iid
+        if target_instance.sum() < 100:
+            organ_label[target_instance] = 0
 
     final_mask[organ_label > 0] = tgt
     return final_mask
 
 
 def postprocess_results(pred_masks, mapping):
-    pred_masks = pred_masks.numpy().astype(np.uint8)
     C, W, H, D = pred_masks.shape
 
     minimum_side = 17  # ~5k -> smallest on average is ~8k
     fct = 1
     resize = (H * W * D) > (410 * 410 * 300)
     if resize:
+        print("Downsampling image for postprocessing.")
         fct = 0.8
         pred_masks = (
             ndimage.zoom(pred_masks, (1, fct, fct, fct), order=0, prefilter=False) > 0
@@ -141,8 +152,6 @@ def postprocess_results(pred_masks, mapping):
             factor=0.2,
         )
 
-        # nib.save(nib.Nifti1Image(organ_label, np.eye(4)), 'test.nii.gz')
-
         # Add the classes that do not intersect with anything
         intersection = (final_mask * organ_label) > 0
         if intersection.sum() == 0:
@@ -176,7 +185,7 @@ def simple_merge(pred_masks, logits, mapping):
 
     task_merged = torch.argmax(task_logits, 0) + 1  # why so slow?
     merged_label = task_merged * (mask > 0)
-    return merged_label, task_logits
+    return merged_label
 
 
 def resample_3d(pred_hard, logits, batch, do_postprocessing, skip_classes=True):
@@ -192,20 +201,15 @@ def resample_3d(pred_hard, logits, batch, do_postprocessing, skip_classes=True):
             pred_hard,
             transfer_mapping,
         )
-        task_logits = None
         merged_pred = merged_pred.astype(np.uint8)
     else:
         print(" => Merging binary masks...")
-        merged_pred, task_logits = simple_merge(
+        merged_pred = simple_merge(
             pred_hard,
             logits,
             transfer_mapping,
         )
         merged_pred = merged_pred.detach().numpy().astype(np.uint8)
-
-    # weird, but saving the logits as float is extremely heavy
-    # task_logits = task_logits.numpy() * 10000
-    # task_logits = task_logits.astype(np.uint16)
 
     # re-orient the output to match the original input
     affine = batch["image_meta_dict"]["affine"][0]
@@ -214,8 +218,7 @@ def resample_3d(pred_hard, logits, batch, do_postprocessing, skip_classes=True):
 
     if len(flip) >= 1:
         merged_pred = np.flip(merged_pred, flip)
-        # task_logits = np.flip(task_logits, flip + 1)
-    return merged_pred, task_logits
+    return merged_pred
 
 
 def get_key(name):

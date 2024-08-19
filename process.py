@@ -55,11 +55,11 @@ class Toothfairy_algorithm(SegmentationAlgorithm):
 
     @torch.no_grad()
     def predict(self, *, input_image: sitk.Image):
-        input_array = sitk.GetArrayFromImage(input_image)
-        input_tensor = preprocessing(input_array)
+        input_image = sitk.GetArrayFromImage(input_image)
+        input_image = preprocessing(input_image)
 
         output = ToothFairy_inference(
-            input_tensor,
+            input_image,
             device=get_default_device(),
         )
 
